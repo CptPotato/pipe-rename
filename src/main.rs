@@ -1,7 +1,7 @@
 use ansi_term::Colour;
 use clap::Parser;
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use dialoguer::Select;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -44,6 +44,9 @@ struct Opts {
     /// Undo the previous renaming operation
     #[clap(short, long)]
     undo: bool,
+    /// Don't use glob matching
+    #[clap(short, long)]
+    no_glob: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,13 +186,31 @@ fn get_input(files: Vec<String>) -> anyhow::Result<Vec<String>> {
     return Ok(input.lines().map(|f| f.to_string()).collect());
 }
 
-fn get_input_files(files: Vec<String>) -> anyhow::Result<Vec<String>> {
+fn get_input_files(files: Vec<String>, glob: bool) -> anyhow::Result<Vec<String>> {
     let mut input_files = get_input(files)?;
+
     // This is a special case where we want to expand `.` and `..`.
     let dots = &[".", ".."];
     if input_files.len() == 1 && dots.contains(&input_files[0].as_str()) {
         input_files = expand_dir(&input_files[0])?;
     }
+
+    if glob {
+        let mut expanded_files = Vec::new();
+        for pattern in &input_files {
+            for path in glob::glob(pattern)? {
+                expanded_files.push(
+                    path?
+                        .to_str()
+                        .ok_or_else(|| anyhow!("Failed to convert path to string."))?
+                        .to_owned(),
+                );
+            }
+        }
+
+        input_files = expanded_files;
+    }
+
     if input_files.is_empty() {
         bail!("No input files on stdin or as args. Aborting.");
     }
@@ -320,7 +341,7 @@ fn execute_renames(
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     let dir = &replacement.new.parent();
                     if let Some(dir) = dir {
-                        fs::create_dir_all(&dir)?;
+                        fs::create_dir_all(dir)?;
                         fs::rename(&replacement.original, &replacement.new)?;
                     }
                 }
@@ -430,7 +451,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let input_files = get_input_files(opts.files)?;
+    let input_files = get_input_files(opts.files, !opts.no_glob)?;
 
     check_input_files(&input_files)?;
 
